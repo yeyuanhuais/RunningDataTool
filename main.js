@@ -13,12 +13,12 @@ const WINDOW_CONFIG = {
 };
 
 function normalizeNumeric(value) {
-  if (!value) {
-    return null;
+  if (value === undefined || value === null || value === '') {
+    return 0;
   }
-  const cleaned = value.replace(/kB|%/gi, '').trim();
+  const cleaned = String(value).replace(/kB|%/gi, '').trim();
   const parsed = Number(cleaned);
-  return Number.isNaN(parsed) ? null : parsed;
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function parseCsv(content) {
@@ -42,15 +42,20 @@ function parseCsv(content) {
 function buildSeries(data) {
   const { headers, rows } = data;
   const timeAxis = rows.map((row) => row.timestamp || '');
-  const metrics = headers.filter((field) => field !== 'timestamp');
+  const metrics = headers.filter((field) =>
+    field !== 'timestamp' && !field.toLowerCase().endsWith('_pid')
+  );
+  const useSampling = rows.length > 2000;
   const series = metrics.map((field) => ({
     name: field,
     type: 'line',
     showSymbol: false,
+    sampling: useSampling ? 'lttb' : undefined,
+    progressive: useSampling ? 1000 : undefined,
     data: rows.map((row) => normalizeNumeric(row[field]))
   }));
 
-  const pidFields = metrics.filter((field) => field.toLowerCase().endsWith('_pid'));
+  const pidFields = headers.filter((field) => field.toLowerCase().endsWith('_pid'));
   const restarts = pidFields.map((field) => {
     let lastPid = null;
     let restartsCount = 0;
