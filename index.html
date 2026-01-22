@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Running Data Tool</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <button id="select-folder">选择文件夹</button>
+      <div class="status" id="folder-status">未选择文件夹</div>
+      <label class="file-select" for="csv-file">
+        CSV 文件:
+        <select id="csv-file" disabled>
+          <option>请选择</option>
+        </select>
+      </label>
+    </header>
+
+    <main>
+      <section class="chart-section">
+        <div id="chart" class="chart"></div>
+      </section>
+      <aside class="legend-panel">
+        <h2>已加载字段</h2>
+        <ul id="metric-list"></ul>
+        <h2>PID 重启统计</h2>
+        <ul id="pid-list"></ul>
+      </aside>
+    </main>
+
+    <script src="node_modules/echarts/dist/echarts.min.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>
