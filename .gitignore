@@ -5,4 +5,4 @@ node_modules/
 dist/*
 
 # 但保留这个 exe 文件
-!dist/Running Data Tool 0.1.0.exe
+!dist/Running Data Tool *.exe
