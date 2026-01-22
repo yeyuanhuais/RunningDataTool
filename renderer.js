@@ -2,6 +2,7 @@ const selectFolderButton = document.getElementById('select-folder');
 const folderStatus = document.getElementById('folder-status');
 const csvSelect = document.getElementById('csv-file');
 const metricList = document.getElementById('metric-list');
+const pidList = document.getElementById('pid-list');
 const chartDom = document.getElementById('chart');
 
 const chart = echarts.init(chartDom);
@@ -16,6 +17,15 @@ function updateMetricList(metrics) {
   });
 }
 
+function updatePidList(restarts) {
+  pidList.innerHTML = '';
+  restarts.forEach(({ field, restarts: count }) => {
+    const item = document.createElement('li');
+    item.textContent = `${field}: 重启 ${count} 次`;
+    pidList.appendChild(item);
+  });
+}
+
 function updateChart(payload) {
   if (!payload) {
     chart.clear();
@@ -25,6 +35,7 @@ function updateChart(payload) {
 
   const { timeAxis, series, metrics } = payload;
   updateMetricList(metrics);
+  updatePidList(payload.restarts || []);
 
   chart.setOption({
     tooltip: {

@@ -12,8 +12,6 @@ const WINDOW_CONFIG = {
   }
 };
 
-const MEM_FIELDS = ['MemTotal', 'MemFree', 'Buffers', 'Cached'];
-
 function normalizeNumeric(value) {
   if (!value) {
     return null;
@@ -43,16 +41,8 @@ function parseCsv(content) {
 
 function buildSeries(data) {
   const { headers, rows } = data;
-  const seriesFields = headers.filter((header) =>
-    header === 'timestamp' ||
-    MEM_FIELDS.includes(header) ||
-    /cpu/i.test(header) ||
-    /vmHWM/i.test(header) ||
-    /wmRSS/i.test(header)
-  );
-
   const timeAxis = rows.map((row) => row.timestamp || '');
-  const metrics = seriesFields.filter((field) => field !== 'timestamp');
+  const metrics = headers.filter((field) => field !== 'timestamp');
   const series = metrics.map((field) => ({
     name: field,
     type: 'line',
@@ -60,10 +50,32 @@ function buildSeries(data) {
     data: rows.map((row) => normalizeNumeric(row[field]))
   }));
 
+  const pidFields = metrics.filter((field) => field.toLowerCase().endsWith('_pid'));
+  const restarts = pidFields.map((field) => {
+    let lastPid = null;
+    let restartsCount = 0;
+    rows.forEach((row) => {
+      const pidValue = row[field];
+      if (!pidValue) {
+        return;
+      }
+      if (lastPid === null) {
+        lastPid = pidValue;
+        return;
+      }
+      if (pidValue !== lastPid) {
+        restartsCount += 1;
+        lastPid = pidValue;
+      }
+    });
+    return { field, restarts: restartsCount };
+  });
+
   return {
     timeAxis,
     series,
-    metrics
+    metrics,
+    restarts
   };
 }
 
