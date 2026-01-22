@@ -115,18 +115,32 @@ function runCommand(command, args) {
     child.stderr.on('data', (data) => {
       stderr += data.toString();
     });
+    child.on('error', (error) => {
+      resolve({ code: 1, stdout, stderr: error.message });
+    });
     child.on('close', (code) => {
       resolve({ code, stdout, stderr });
     });
   });
 }
 
-function buildSshCommand({ ip, username, password }) {
+async function commandExists(command) {
+  const result = await runCommand('which', [command]);
+  return result.code === 0;
+}
+
+async function buildSshCommand({ ip, username, password }) {
   const user = username || 'root';
   const host = `${user}@${ip}`;
   const baseArgs = ['-o', 'StrictHostKeyChecking=no'];
-  const prefix = password ? ['sshpass', '-p', password] : [];
-  return { host, baseArgs, prefix };
+  if (!password) {
+    return { host, baseArgs, prefix: [] };
+  }
+  const hasSshpass = await commandExists('sshpass');
+  if (!hasSshpass) {
+    return { host, baseArgs, prefix: [], missingSshpass: true };
+  }
+  return { host, baseArgs, prefix: ['sshpass', '-p', password] };
 }
 
 async function deployScript({ ip, username, password }) {
@@ -137,7 +151,14 @@ async function deployScript({ ip, username, password }) {
   if (!fs.existsSync(scriptPath)) {
     return { ok: false, message: '未找到脚本文件' };
   }
-  const { host, baseArgs, prefix } = buildSshCommand({ ip, username, password });
+  const { host, baseArgs, prefix, missingSshpass } = await buildSshCommand({
+    ip,
+    username,
+    password
+  });
+  if (missingSshpass) {
+    return { ok: false, message: '未找到 sshpass，请先安装或使用免密登录' };
+  }
 
   const scpArgs = [
     ...prefix,
@@ -177,7 +198,14 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: '未选择本地目录' };
   }
   const destination = result.filePaths[0];
-  const { host, baseArgs, prefix } = buildSshCommand({ ip, username, password });
+  const { host, baseArgs, prefix, missingSshpass } = await buildSshCommand({
+    ip,
+    username,
+    password
+  });
+  if (missingSshpass) {
+    return { ok: false, message: '未找到 sshpass，请先安装或使用免密登录' };
+  }
   const scpArgs = [
     ...prefix,
     'scp',
