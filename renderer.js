@@ -10,6 +10,8 @@ const deployPasswordInput = document.getElementById('deploy-password');
 const deployStartButton = document.getElementById('deploy-start');
 const downloadCsvButton = document.getElementById('download-csv');
 const deployStatus = document.getElementById('deploy-status');
+const viewButtons = document.querySelectorAll('[data-view-target]');
+const viewPanels = document.querySelectorAll('[data-view]');
 
 const chart = echarts.init(chartDom);
 let currentFolder = null;
@@ -148,3 +150,16 @@ async function handleDownloadCsv() {
 
 deployStartButton.addEventListener('click', handleDeploy);
 downloadCsvButton.addEventListener('click', handleDownloadCsv);
+
+viewButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const target = button.dataset.viewTarget;
+    viewButtons.forEach((item) => {
+      item.classList.toggle('is-active', item === button);
+    });
+    viewPanels.forEach((panel) => {
+      panel.classList.toggle('is-active', panel.dataset.view === target);
+    });
+    chart.resize();
+  });
+});
