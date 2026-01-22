@@ -8,6 +8,7 @@ const chartDom = document.getElementById("chart");
 const deployIpInput = document.getElementById("deploy-ip");
 const deployUserInput = document.getElementById("deploy-user");
 const deployPasswordInput = document.getElementById("deploy-password");
+const deployRebootInput = document.getElementById("deploy-reboot");
 const deployStartButton = document.getElementById("deploy-start");
 const downloadCsvButton = document.getElementById("download-csv");
 const deployStatus = document.getElementById("deploy-status");
@@ -168,6 +169,7 @@ function getDeployPayload() {
     ip: deployIpInput.value.trim(),
     username: deployUserInput.value.trim() || "root",
     password: deployPasswordInput.value,
+    rebootFirst: deployRebootInput.value === "on",
   };
 }
 

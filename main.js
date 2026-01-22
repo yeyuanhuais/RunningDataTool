@@ -6,7 +6,7 @@ const { spawn } = require("child_process");
 const WINDOW_CONFIG = {
   width: 1200,
   height: 800,
-  icon: path.join(__dirname, "/build/ico.ico"), // ← 这里
+  icon: path.join(__dirname, "/build/icon.ico"), // ← 这里
   webPreferences: {
     preload: path.join(__dirname, "preload.js"),
     contextIsolation: true,
@@ -324,7 +324,36 @@ async function buildSshCommand({ ip, username, password }) {
   return { host, baseArgs, prefix: [], keyInitialized: true };
 }
 
-async function deployScript({ ip, username, password }) {
+/**
+ * 等待一段时间
+ */
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * 判断 ssh 输出是否像“正常断开”（常见于 reboot 后）
+ */
+function isSshDisconnectLike(res) {
+  const s = ((res && (res.stderr || "")) + " " + (res && (res.stdout || ""))).toLowerCase();
+  return (
+    s.includes("connection closed") ||
+    s.includes("connection reset") ||
+    s.includes("broken pipe") ||
+    s.includes("connection timed out") ||
+    s.includes("closed by remote host") ||
+    s.includes("connection refused")
+  );
+}
+
+/**
+ * 部署脚本：
+ * - 可选：先 reboot
+ * - 等待设备上线
+ * - 检查不存在则上传
+ * - CRLF 修正、chmod、nohup 单实例启动
+ */
+async function deployScript({ ip, username, password, rebootFirst = true }) {
   if (!ip) {
     return { ok: false, message: "请填写设备 IP" };
   }
@@ -352,34 +381,45 @@ async function deployScript({ ip, username, password }) {
 
   const remotePath = `/root/${localName}`;
   const remoteLog = `/root/shell_recordHMI.log`;
+  const pidFile = `/tmp/${localName}.pid`;
 
-  // 远端执行命令：处理 CRLF、chmod、nohup 后台启动（快速返回）
+  // 单实例启动命令（pidfile + kill -0）
   const startCmd =
     `test -f ${remotePath} || { echo "__MISSING__"; exit 2; }; ` +
     `(sed -i 's/\\r$//' ${remotePath} >/dev/null 2>&1 || true); ` +
     `chmod 755 ${remotePath}; ` +
+    `if [ -f ${pidFile} ]; then ` +
+    `  oldpid=$(cat ${pidFile} 2>/dev/null); ` +
+    `  if [ -n "$oldpid" ] && kill -0 "$oldpid" >/dev/null 2>&1; then ` +
+    `    echo "__ALREADY_RUNNING__:$oldpid"; exit 0; ` +
+    `  fi; ` +
+    `fi; ` +
     `nohup /bin/sh ${remotePath} >${remoteLog} 2>&1 & ` +
-    `echo "__STARTED__";`;
+    `newpid=$!; echo "$newpid" > ${pidFile}; ` +
+    `echo "__STARTED__:$newpid";`;
 
-  // 1) 先检查远端脚本是否已存在
-  const checkArgs = [...prefix, "ssh", ...baseArgs, host, `test -f ${remotePath} && echo "__EXISTS__" || echo "__NO__"`];
-  const checkRes = await runCommand(checkArgs[0], checkArgs.slice(1), { timeoutMs: 20000 });
+  // 用于探测是否上线
+  const onlineProbeCmd = `echo "__ONLINE__"`;
 
-  // 如果 ssh 卡住，给出更明确提示
-  if (checkRes.code === 124) {
-    return {
-      ok: false,
-      message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先在命令行手动 ssh 一次确认，或先完成免密初始化。",
-    };
+  // 检查文件存在命令
+  const existsCmd = `test -f ${remotePath} && echo "__EXISTS__" || echo "__NO__"`;
+
+  // reboot 命令：先 sync 再 reboot
+  // 注意：reboot 会导致 ssh 断开，属于正常现象
+  const rebootCmd = `sync; reboot`;
+
+  /**
+   * 执行 ssh 命令（统一封装）
+   */
+  async function sshExec(cmd, timeoutMs) {
+    const sshArgs = [...prefix, "ssh", ...baseArgs, host, cmd];
+    return runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs });
   }
-  if (checkRes.code !== 0) {
-    return { ok: false, message: `检查远端失败: ${checkRes.stderr || checkRes.stdout}` };
-  }
 
-  const exists = (checkRes.stdout || "").includes("__EXISTS__");
-
-  // 2) 如果不存在：上传
-  if (!exists) {
+  /**
+   * 上传脚本
+   */
+  async function scpUpload() {
     const scpArgs = [...prefix, "scp", ...baseArgs, scriptPath, `${host}:${remotePath}`];
     const scpRes = await runCommand(scpArgs[0], scpArgs.slice(1), { timeoutMs: 60000 });
     if (scpRes.code === 124) {
@@ -388,30 +428,110 @@ async function deployScript({ ip, username, password }) {
     if (scpRes.code !== 0) {
       return { ok: false, message: `拷贝失败: ${scpRes.stderr || scpRes.stdout}` };
     }
+    return { ok: true };
   }
 
-  // 3) 执行长跑（不管是否上传，都执行）
-  const sshArgs = [...prefix, "ssh", ...baseArgs, host, startCmd];
-  const sshRes = await runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs: 20000 });
+  /**
+   * 等待设备重启上线（轮询 ssh）
+   */
+  async function waitOnline({ maxWaitMs = 5 * 60 * 1000, intervalMs = 5000 } = {}) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const res = await sshExec(onlineProbeCmd, 8000);
+      if (res.code === 0 && (res.stdout || "").includes("__ONLINE__")) {
+        return { ok: true };
+      }
+      await sleep(intervalMs);
+    }
+    return { ok: false, message: "设备重启超时：无法重新连接 ssh" };
+  }
 
-  if (sshRes.code === 124) {
-    return { ok: false, message: "执行超时：ssh 可能在等待交互或远端 shell 阻塞。" };
-  }
-  if (sshRes.code !== 0) {
-    // 把 stdout/stderr 都带上，方便你定位
-    return { ok: false, message: `执行失败: ${sshRes.stderr || ""} ${sshRes.stdout || ""}`.trim() };
+  // ---------- 0) 先做一次上线探测（非必须，但能更快给出错误提示） ----------
+  {
+    const probeRes = await sshExec(onlineProbeCmd, 15000);
+    if (probeRes.code === 124) {
+      return { ok: false, message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先完成免密初始化。" };
+    }
+    if (probeRes.code !== 0) {
+      return { ok: false, message: `无法连接设备: ${probeRes.stderr || probeRes.stdout}` };
+    }
   }
 
-  const out = (sshRes.stdout || "") + (sshRes.stderr || "");
-  if (out.includes("__MISSING__")) {
-    return { ok: false, message: `远端未找到脚本：${remotePath}（可能上传路径/权限有问题）` };
+  // ---------- 1) 检查远端脚本是否已存在，不存在则上传 ----------
+  let exists = false;
+  {
+    const checkRes = await sshExec(existsCmd, 20000);
+    if (checkRes.code === 124) {
+      return { ok: false, message: "检查远端失败：ssh 超时（可能在等待交互）。请确认免密已完成。" };
+    }
+    if (checkRes.code !== 0) {
+      return { ok: false, message: `检查远端失败: ${checkRes.stderr || checkRes.stdout}` };
+    }
+    exists = ((checkRes.stdout || "") + (checkRes.stderr || "")).includes("__EXISTS__");
   }
-  if (!out.includes("__STARTED__")) {
-    // 有些设备 stdout 可能被吞，这里仍返回成功但带提示
+
+  if (!exists) {
+    const up = await scpUpload();
+    if (!up.ok) return up;
+  }
+
+  // ---------- 2) 如需要：先 reboot ----------
+  if (rebootFirst) {
+    const rbRes = await sshExec(rebootCmd, 15000);
+
+    // reboot 后断开是正常的：可能 code != 0 或 stderr 有 connection closed
+    // 这里的判定策略：只要不是明显“命令不存在/权限拒绝”，大概率认为 reboot 已触发
+    const out = ((rbRes.stdout || "") + " " + (rbRes.stderr || "")).toLowerCase();
+    const hardFail = out.includes("permission denied") || out.includes("not found") || (out.includes("reboot:") && out.includes("usage"));
+
+    if (rbRes.code === 124) {
+      // 超时也可能是设备卡住/命令未返回；但 reboot 正常也会导致连接中断
+      // 这里不直接判失败，继续走 waitOnline
+    } else if (rbRes.code !== 0 && hardFail && !isSshDisconnectLike(rbRes)) {
+      return { ok: false, message: `reboot 失败: ${rbRes.stderr || rbRes.stdout}` };
+    }
+
+    // ---------- 3) 等待上线 ----------
+    const w = await waitOnline({ maxWaitMs: 180000, intervalMs: 5000 });
+    if (!w.ok) return w;
+  }
+
+  // ---------- 4) 上线后启动脚本（单实例） ----------
+  {
+    const sshRes = await sshExec(startCmd, 20000);
+
+    if (sshRes.code === 124) {
+      return { ok: false, message: "执行超时：远端 shell 阻塞或 ssh 不稳定。" };
+    }
+    if (sshRes.code !== 0) {
+      return { ok: false, message: `执行失败: ${(sshRes.stderr || "") + " " + (sshRes.stdout || "")}`.trim() };
+    }
+
+    const out = (sshRes.stdout || "") + (sshRes.stderr || "");
+
+    if (out.includes("__MISSING__")) {
+      return { ok: false, message: `远端未找到脚本：${remotePath}（可能上传路径/权限有问题）` };
+    }
+
+    if (out.includes("__ALREADY_RUNNING__")) {
+      // 例：__ALREADY_RUNNING__:1234
+      return {
+        ok: true,
+        message: rebootFirst ? "已重启设备，脚本已在运行（未重复启动）" : "脚本已在运行（未重复启动）",
+      };
+    }
+
+    if (out.includes("__STARTED__")) {
+      // 例：__STARTED__:1234
+      return {
+        ok: true,
+        message: rebootFirst ? "已重启设备并启动脚本" : exists ? "脚本已存在，已启动（单实例）" : "已上传并启动脚本（单实例）",
+      };
+    }
+
+    // 有些设备 stdout 可能异常，仍返回成功但提示检查日志
     return { ok: true, message: `已执行启动命令（未收到确认输出）。请检查 ${remoteLog}` };
   }
-
-  return { ok: true, message: exists ? "脚本已存在，已重新启动长跑" : "已上传并启动长跑" };
 }
 
 async function downloadCsv({ ip, username, password }) {
