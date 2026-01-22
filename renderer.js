@@ -4,6 +4,12 @@ const csvSelect = document.getElementById('csv-file');
 const metricList = document.getElementById('metric-list');
 const pidList = document.getElementById('pid-list');
 const chartDom = document.getElementById('chart');
+const deployIpInput = document.getElementById('deploy-ip');
+const deployUserInput = document.getElementById('deploy-user');
+const deployPasswordInput = document.getElementById('deploy-password');
+const deployStartButton = document.getElementById('deploy-start');
+const downloadCsvButton = document.getElementById('download-csv');
+const deployStatus = document.getElementById('deploy-status');
 
 const chart = echarts.init(chartDom);
 let currentFolder = null;
@@ -117,3 +123,28 @@ csvSelect.addEventListener('change', handleCsvSelection);
 window.addEventListener('resize', () => {
   chart.resize();
 });
+
+function getDeployPayload() {
+  return {
+    ip: deployIpInput.value.trim(),
+    username: deployUserInput.value.trim() || 'root',
+    password: deployPasswordInput.value
+  };
+}
+
+async function handleDeploy() {
+  const payload = getDeployPayload();
+  deployStatus.textContent = '正在部署...';
+  const result = await window.electronAPI.deployScript(payload);
+  deployStatus.textContent = result?.message || '部署完成';
+}
+
+async function handleDownloadCsv() {
+  const payload = getDeployPayload();
+  deployStatus.textContent = '正在下载 CSV...';
+  const result = await window.electronAPI.downloadCsv(payload);
+  deployStatus.textContent = result?.message || '下载完成';
+}
+
+deployStartButton.addEventListener('click', handleDeploy);
+downloadCsvButton.addEventListener('click', handleDownloadCsv);
