@@ -53,11 +53,11 @@ body {
 }
 
 .view.is-active {
-  display: block;
+  display: flex;
 }
 
 .toolbar {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 16px;
   padding: 16px 24px;
@@ -103,6 +103,7 @@ main {
 }
 
 .deploy-panel {
+  flex-flow: column;
   margin: 16px 24px 24px;
   background: #ffffff;
   border-radius: 12px;
@@ -196,6 +197,7 @@ main {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px;
+  margin-top: 20px;
 }
 
 .info-card {
