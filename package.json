@@ -21,7 +21,7 @@
     "productName": "Running Data Tool",
     "win": {
       "target": "portable",
-      "icon": "build/icon.png"
+      "icon": "build/icon.ico"
     },
     "files": [
       "**/*"

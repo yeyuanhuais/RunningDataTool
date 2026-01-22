@@ -1,6 +1,7 @@
 const selectFolderButton = document.getElementById("select-folder");
 const folderStatus = document.getElementById("folder-status");
 const csvSelect = document.getElementById("csv-file");
+const refreshFolder = document.getElementById("refresh-folder");
 const metricList = document.getElementById("metric-list");
 const pidList = document.getElementById("pid-list");
 const chartDom = document.getElementById("chart");
@@ -42,7 +43,23 @@ function updateChart(payload) {
   }
 
   const { timeAxis, series, metrics } = payload;
-  const defaultHiddenMetrics = ["vmpeak", "vmsize", "cpu","MemTotal","MemFree","Buffers","Cached","Slab","SReclaimable","SwapCached","SwapTotal","SwapFree","VmallocUsed","VmallocChunk","io_kw_s"];
+  const defaultHiddenMetrics = [
+    "vmpeak",
+    "vmsize",
+    "cpu",
+    "MemTotal",
+    "MemFree",
+    "Buffers",
+    "Cached",
+    "Slab",
+    "SReclaimable",
+    "SwapCached",
+    "SwapTotal",
+    "SwapFree",
+    "VmallocUsed",
+    "VmallocChunk",
+    "io_kw_s",
+  ];
   const legendSelected = metrics.reduce((acc, metric) => {
     const key = metric.toLowerCase();
     const shouldShow = !defaultHiddenMetrics.some(h => key.includes(h.toLowerCase()));
@@ -118,6 +135,16 @@ async function handleFolderSelection() {
   setSelectOptions(result.files);
   updateChart(null);
 }
+async function handleFolderRefresh() {
+  if (!currentFolder) {
+    return;
+  }
+  const result = await window.electronAPI.refreshFolder(currentFolder);
+  currentFolder = result.folder;
+  folderStatus.textContent = `当前文件夹: ${result.folder}`;
+  setSelectOptions(result.files);
+  updateChart(null);
+}
 
 async function handleCsvSelection() {
   const filename = csvSelect.value;
@@ -128,8 +155,8 @@ async function handleCsvSelection() {
   const payload = await window.electronAPI.loadCsv(currentFolder, filename);
   updateChart(payload);
 }
-
 selectFolderButton.addEventListener("click", handleFolderSelection);
+refreshFolder.addEventListener("click", handleFolderRefresh);
 csvSelect.addEventListener("change", handleCsvSelection);
 
 window.addEventListener("resize", () => {

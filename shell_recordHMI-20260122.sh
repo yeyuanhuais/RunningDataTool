@@ -1,10 +1,16 @@
 #!/bin/sh
 
 fileprefix="/hmi/data/"
-dateTime=$(date "+%s")
+dateTime=$(date "+%Y%m%d%H%M%S")
+
 pnCode=$(cat /hmi/pncode/pn.ini 2>/dev/null | head -n 1 | tr -d '\r\n')
 [ -z "$pnCode" ] && pnCode="unknown"
-recordfile="${fileprefix}${pnCode}_${dateTime}.csv"
+
+ipAddr=$(ip addr show | awk '/inet / && $2 !~ /^127/ {sub(/\/.*/, "", $2); print $2; exit}')
+[ -z "$ipAddr" ] && ipAddr="unknownip"
+
+recordfile="${fileprefix}${pnCode}_${ipAddr}_${dateTime}.csv"
+
 
 # 只在首次创建文件时写表头（保持你原来的表头不变，避免影响你后续解析）
 if [ ! -f "$recordfile" ]; then

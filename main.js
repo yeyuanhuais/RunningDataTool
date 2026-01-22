@@ -6,7 +6,7 @@ const { spawn } = require("child_process");
 const WINDOW_CONFIG = {
   width: 1200,
   height: 800,
-  icon: path.join(__dirname, '/build/ico.png'), // ← 这里
+  icon: path.join(__dirname, "/build/ico.ico"), // ← 这里
   webPreferences: {
     preload: path.join(__dirname, "preload.js"),
     contextIsolation: true,
@@ -59,9 +59,7 @@ function formatTimestamp(value) {
   }
 
   // 原有：yyyy-MM-dd HH:mm:ss / yyyy/MM/dd HH:mm:ss
-  const dateMatch = raw.match(
-    /^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::(\d{2}))(?::(\d{2}))?)?$/
-  );
+  const dateMatch = raw.match(/^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::(\d{2}))(?::(\d{2}))?)?$/);
   if (dateMatch) {
     const [, year, month, day, hour = "00", minute = "00", second = "00"] = dateMatch;
     return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
@@ -72,9 +70,8 @@ function formatTimestamp(value) {
     const epoch = Number(raw.length === 10 ? `${raw}000` : raw);
     const date = new Date(epoch);
     if (!Number.isNaN(date.getTime())) {
-      const pad = (n) => String(n).padStart(2, "0");
-      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-             `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+      const pad = n => String(n).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
     }
   }
 
@@ -136,7 +133,11 @@ async function selectFolder() {
   const csvFiles = entries.filter(entry => entry.toLowerCase().endsWith(".csv"));
   return { folder, files: csvFiles };
 }
-
+async function refreshFolder(folder) {
+  const entries = fs.readdirSync(folder);
+  const csvFiles = entries.filter(entry => entry.toLowerCase().endsWith(".csv"));
+  return { folder, files: csvFiles };
+}
 function loadCsvFile(folder, filename) {
   const fullPath = path.join(folder, filename);
   const content = fs.readFileSync(fullPath, "utf-8");
@@ -144,31 +145,39 @@ function loadCsvFile(folder, filename) {
 }
 
 function runCommand(command, args, options) {
-  return new Promise((resolve) => {
-    const timeoutMs = (options && options.timeoutMs) || 10000; // 默认 10s
+  return new Promise(resolve => {
+    const timeoutMs = (options && options.timeoutMs) || 30000; // 默认 30s
     const child = spawn(command, args, {
       windowsHide: true,
-      ...(options || {})
+      ...(options || {}),
     });
 
-    let stdout = '';
-    let stderr = '';
+    let stdout = "";
+    let stderr = "";
     let killedByTimeout = false;
 
     const timer = setTimeout(() => {
       killedByTimeout = true;
-      try { child.kill(); } catch (_) {}
+      try {
+        child.kill();
+      } catch (_) {}
     }, timeoutMs);
 
-    child.stdout && child.stdout.on('data', (data) => { stdout += data.toString(); });
-    child.stderr && child.stderr.on('data', (data) => { stderr += data.toString(); });
+    child.stdout &&
+      child.stdout.on("data", data => {
+        stdout += data.toString();
+      });
+    child.stderr &&
+      child.stderr.on("data", data => {
+        stderr += data.toString();
+      });
 
-    child.on('error', (error) => {
+    child.on("error", error => {
       clearTimeout(timer);
       resolve({ code: 1, stdout, stderr: error.message });
     });
 
-    child.on('close', (code) => {
+    child.on("close", code => {
       clearTimeout(timer);
       if (killedByTimeout) {
         resolve({ code: 124, stdout, stderr: `Command timeout after ${timeoutMs}ms` });
@@ -178,7 +187,6 @@ function runCommand(command, args, options) {
     });
   });
 }
-
 
 function getKnownHostsNull() {
   return process.platform === "win32" ? "NUL" : "/dev/null";
@@ -318,22 +326,28 @@ async function buildSshCommand({ ip, username, password }) {
 
 async function deployScript({ ip, username, password }) {
   if (!ip) {
-    return { ok: false, message: '请填写设备 IP' };
+    return { ok: false, message: "请填写设备 IP" };
   }
 
-  const localName = 'shell_recordHMI-20260122.sh';
+  const localName = "shell_recordHMI-20260122.sh";
   const scriptPath = path.join(__dirname, localName);
   if (!fs.existsSync(scriptPath)) {
-    return { ok: false, message: '未找到脚本文件' };
+    return { ok: false, message: "未找到脚本文件" };
   }
 
-  const { host, baseArgs, prefix, keyInitFailed, message: keyMsg } = await buildSshCommand({
+  const {
+    host,
+    baseArgs,
+    prefix,
+    keyInitFailed,
+    message: keyMsg,
+  } = await buildSshCommand({
     ip,
     username,
-    password
+    password,
   });
   if (keyInitFailed) {
-    return { ok: false, message: keyMsg || '免密初始化失败' };
+    return { ok: false, message: keyMsg || "免密初始化失败" };
   }
 
   const remotePath = `/root/${localName}`;
@@ -348,35 +362,28 @@ async function deployScript({ ip, username, password }) {
     `echo "__STARTED__";`;
 
   // 1) 先检查远端脚本是否已存在
-  const checkArgs = [...prefix, 'ssh', ...baseArgs, host, `test -f ${remotePath} && echo "__EXISTS__" || echo "__NO__"`];
+  const checkArgs = [...prefix, "ssh", ...baseArgs, host, `test -f ${remotePath} && echo "__EXISTS__" || echo "__NO__"`];
   const checkRes = await runCommand(checkArgs[0], checkArgs.slice(1), { timeoutMs: 20000 });
 
   // 如果 ssh 卡住，给出更明确提示
   if (checkRes.code === 124) {
     return {
       ok: false,
-      message:
-        '连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先在命令行手动 ssh 一次确认，或先完成免密初始化。'
+      message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先在命令行手动 ssh 一次确认，或先完成免密初始化。",
     };
   }
   if (checkRes.code !== 0) {
     return { ok: false, message: `检查远端失败: ${checkRes.stderr || checkRes.stdout}` };
   }
 
-  const exists = (checkRes.stdout || '').includes('__EXISTS__');
+  const exists = (checkRes.stdout || "").includes("__EXISTS__");
 
   // 2) 如果不存在：上传
   if (!exists) {
-    const scpArgs = [
-      ...prefix,
-      'scp',
-      ...baseArgs,
-      scriptPath,
-      `${host}:${remotePath}`
-    ];
+    const scpArgs = [...prefix, "scp", ...baseArgs, scriptPath, `${host}:${remotePath}`];
     const scpRes = await runCommand(scpArgs[0], scpArgs.slice(1), { timeoutMs: 60000 });
     if (scpRes.code === 124) {
-      return { ok: false, message: '上传超时：scp 可能在等待交互。请先确认免密已完成。' };
+      return { ok: false, message: "上传超时：scp 可能在等待交互。请先确认免密已完成。" };
     }
     if (scpRes.code !== 0) {
       return { ok: false, message: `拷贝失败: ${scpRes.stderr || scpRes.stdout}` };
@@ -384,29 +391,28 @@ async function deployScript({ ip, username, password }) {
   }
 
   // 3) 执行长跑（不管是否上传，都执行）
-  const sshArgs = [...prefix, 'ssh', ...baseArgs, host, startCmd];
+  const sshArgs = [...prefix, "ssh", ...baseArgs, host, startCmd];
   const sshRes = await runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs: 20000 });
 
   if (sshRes.code === 124) {
-    return { ok: false, message: '执行超时：ssh 可能在等待交互或远端 shell 阻塞。' };
+    return { ok: false, message: "执行超时：ssh 可能在等待交互或远端 shell 阻塞。" };
   }
   if (sshRes.code !== 0) {
     // 把 stdout/stderr 都带上，方便你定位
-    return { ok: false, message: `执行失败: ${sshRes.stderr || ''} ${sshRes.stdout || ''}`.trim() };
+    return { ok: false, message: `执行失败: ${sshRes.stderr || ""} ${sshRes.stdout || ""}`.trim() };
   }
 
-  const out = (sshRes.stdout || '') + (sshRes.stderr || '');
-  if (out.includes('__MISSING__')) {
+  const out = (sshRes.stdout || "") + (sshRes.stderr || "");
+  if (out.includes("__MISSING__")) {
     return { ok: false, message: `远端未找到脚本：${remotePath}（可能上传路径/权限有问题）` };
   }
-  if (!out.includes('__STARTED__')) {
+  if (!out.includes("__STARTED__")) {
     // 有些设备 stdout 可能被吞，这里仍返回成功但带提示
     return { ok: true, message: `已执行启动命令（未收到确认输出）。请检查 ${remoteLog}` };
   }
 
-  return { ok: true, message: exists ? '脚本已存在，已重新启动长跑' : '已上传并启动长跑' };
+  return { ok: true, message: exists ? "脚本已存在，已重新启动长跑" : "已上传并启动长跑" };
 }
-
 
 async function downloadCsv({ ip, username, password }) {
   if (!ip) {
@@ -444,6 +450,12 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ipcMain.handle("select-folder", async () => selectFolder());
+  ipcMain.handle("refresh-folder", async (event, folder) => {
+    if (!folder) {
+      return null;
+    }
+    return refreshFolder(folder);
+  });
   ipcMain.handle("load-csv", async (event, folder, filename) => {
     if (!folder || !filename) {
       return null;
