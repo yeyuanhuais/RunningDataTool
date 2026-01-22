@@ -42,6 +42,13 @@ function updateChart(payload) {
   }
 
   const { timeAxis, series, metrics } = payload;
+  const defaultHiddenMetrics = new Set(['vmpeak', 'vmsize', 'cpu']);
+  const legendSelected = metrics.reduce((acc, metric) => {
+    const shouldShow = !defaultHiddenMetrics.has(metric.toLowerCase());
+    acc[metric] = shouldShow;
+    return acc;
+  }, {});
+
   updateMetricList(metrics);
   updatePidList(payload.restarts || []);
 
@@ -50,7 +57,8 @@ function updateChart(payload) {
       trigger: 'axis'
     },
     legend: {
-      type: 'scroll'
+      type: 'scroll',
+      selected: legendSelected
     },
     grid: {
       left: '3%',

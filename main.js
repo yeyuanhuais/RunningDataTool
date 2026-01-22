@@ -40,9 +40,34 @@ function parseCsv(content) {
   return { headers, rows };
 }
 
+function formatTimestamp(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const raw = String(value).trim();
+  if (!raw) {
+    return "";
+  }
+  const dateMatch = raw.match(/^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::(\d{2}))(?::(\d{2}))?)?$/);
+  if (dateMatch) {
+    const [, year, month, day, hour = "00", minute = "00", second = "00"] = dateMatch;
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+  }
+  const epochMatch = raw.match(/^\d{10,13}$/);
+  if (epochMatch) {
+    const epoch = Number(raw.length === 10 ? `${raw}000` : raw);
+    const date = new Date(epoch);
+    if (!Number.isNaN(date.getTime())) {
+      const pad = (value) => String(value).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    }
+  }
+  return raw.replace(/\//g, "-");
+}
+
 function buildSeries(data) {
   const { headers, rows } = data;
-  const timeAxis = rows.map(row => row.timestamp || "");
+  const timeAxis = rows.map(row => formatTimestamp(row.timestamp));
   const metrics = headers.filter(field => field !== "timestamp" && !field.toLowerCase().endsWith("_pid"));
   const useSampling = rows.length > 2000;
   const series = metrics.map(field => ({
