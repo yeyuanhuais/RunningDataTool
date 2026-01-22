@@ -7,7 +7,15 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="toolbar">
+    <header class="app-header">
+      <div class="brand">Running Data Tool</div>
+      <nav class="view-switch" aria-label="功能切换">
+        <button type="button" class="is-active" data-view-target="data">数据分析</button>
+        <button type="button" data-view-target="deploy">部署面板</button>
+      </nav>
+    </header>
+
+    <section class="toolbar view is-active" data-view="data">
       <button id="select-folder">选择文件夹</button>
       <div class="status" id="folder-status">未选择文件夹</div>
       <label class="file-select" for="csv-file">
@@ -16,9 +24,29 @@
           <option>请选择</option>
         </select>
       </label>
-    </header>
+    </section>
 
-    <section class="deploy-panel">
+    <main class="view is-active" data-view="data">
+      <section class="chart-section">
+        <div id="chart" class="chart"></div>
+      </section>
+      <section class="info-grid">
+        <div class="info-card">
+          <h2>已加载字段</h2>
+          <ul id="metric-list"></ul>
+        </div>
+        <div class="info-card">
+          <h2>PID 重启统计</h2>
+          <ul id="pid-list"></ul>
+        </div>
+      </section>
+    </main>
+
+    <section class="deploy-panel view" data-view="deploy">
+      <div class="deploy-header">
+        <h2>部署配置</h2>
+        <p>选择设备并快速完成长跑环境部署或 CSV 拉取。</p>
+      </div>
       <div class="deploy-row">
         <label>
           设备 IP:
@@ -32,23 +60,13 @@
           密码:
           <input id="deploy-password" type="password" placeholder="root 密码" />
         </label>
-        <button id="deploy-start">一键部署长跑</button>
-        <button id="download-csv">下载 /hmi/data CSV</button>
+        <div class="deploy-actions">
+          <button id="deploy-start">一键部署长跑</button>
+          <button id="download-csv" class="ghost">下载 /hmi/data CSV</button>
+        </div>
       </div>
       <div class="deploy-status" id="deploy-status">等待部署</div>
     </section>
-
-    <main>
-      <section class="chart-section">
-        <div id="chart" class="chart"></div>
-      </section>
-      <aside class="legend-panel">
-        <h2>已加载字段</h2>
-        <ul id="metric-list"></ul>
-        <h2>PID 重启统计</h2>
-        <ul id="pid-list"></ul>
-      </aside>
-    </main>
 
     <script src="node_modules/echarts/dist/echarts.min.js"></script>
     <script src="renderer.js"></script>
