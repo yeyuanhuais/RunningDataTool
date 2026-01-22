@@ -1,34 +1,34 @@
-const selectFolderButton = document.getElementById('select-folder');
-const folderStatus = document.getElementById('folder-status');
-const csvSelect = document.getElementById('csv-file');
-const metricList = document.getElementById('metric-list');
-const pidList = document.getElementById('pid-list');
-const chartDom = document.getElementById('chart');
-const deployIpInput = document.getElementById('deploy-ip');
-const deployUserInput = document.getElementById('deploy-user');
-const deployPasswordInput = document.getElementById('deploy-password');
-const deployStartButton = document.getElementById('deploy-start');
-const downloadCsvButton = document.getElementById('download-csv');
-const deployStatus = document.getElementById('deploy-status');
-const viewButtons = document.querySelectorAll('[data-view-target]');
-const viewPanels = document.querySelectorAll('[data-view]');
+const selectFolderButton = document.getElementById("select-folder");
+const folderStatus = document.getElementById("folder-status");
+const csvSelect = document.getElementById("csv-file");
+const metricList = document.getElementById("metric-list");
+const pidList = document.getElementById("pid-list");
+const chartDom = document.getElementById("chart");
+const deployIpInput = document.getElementById("deploy-ip");
+const deployUserInput = document.getElementById("deploy-user");
+const deployPasswordInput = document.getElementById("deploy-password");
+const deployStartButton = document.getElementById("deploy-start");
+const downloadCsvButton = document.getElementById("download-csv");
+const deployStatus = document.getElementById("deploy-status");
+const viewButtons = document.querySelectorAll("[data-view-target]");
+const viewPanels = document.querySelectorAll("[data-view]");
 
 const chart = echarts.init(chartDom);
 let currentFolder = null;
 
 function updateMetricList(metrics) {
-  metricList.innerHTML = '';
-  metrics.forEach((metric) => {
-    const item = document.createElement('li');
+  metricList.innerHTML = "";
+  metrics.forEach(metric => {
+    const item = document.createElement("li");
     item.textContent = metric;
     metricList.appendChild(item);
   });
 }
 
 function updatePidList(restarts) {
-  pidList.innerHTML = '';
+  pidList.innerHTML = "";
   restarts.forEach(({ field, restarts: count }) => {
-    const item = document.createElement('li');
+    const item = document.createElement("li");
     item.textContent = `${field}: 重启 ${count} 次`;
     pidList.appendChild(item);
   });
@@ -42,9 +42,11 @@ function updateChart(payload) {
   }
 
   const { timeAxis, series, metrics } = payload;
-  const defaultHiddenMetrics = new Set(['vmpeak', 'vmsize', 'cpu']);
+  const defaultHiddenMetrics = ["vmpeak", "vmsize", "cpu","MemTotal","MemFree","Buffers","Cached","Slab","SReclaimable","SwapCached","SwapTotal","SwapFree","VmallocUsed","VmallocChunk","io_kw_s"];
   const legendSelected = metrics.reduce((acc, metric) => {
-    const shouldShow = !defaultHiddenMetrics.has(metric.toLowerCase());
+    const key = metric.toLowerCase();
+    const shouldShow = !defaultHiddenMetrics.some(h => key.includes(h.toLowerCase()));
+
     acc[metric] = shouldShow;
     return acc;
   }, {});
@@ -54,46 +56,46 @@ function updateChart(payload) {
 
   chart.setOption({
     tooltip: {
-      trigger: 'axis'
+      trigger: "axis",
     },
     legend: {
-      type: 'scroll',
-      selected: legendSelected
+      type: "scroll",
+      selected: legendSelected,
     },
     grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '10%',
-      containLabel: true
+      left: "3%",
+      right: "4%",
+      bottom: "10%",
+      containLabel: true,
     },
     xAxis: {
-      type: 'category',
-      data: timeAxis
+      type: "category",
+      data: timeAxis,
     },
     yAxis: {
-      type: 'value'
+      type: "value",
     },
     dataZoom: [
       {
-        type: 'slider'
+        type: "slider",
       },
       {
-        type: 'inside'
-      }
+        type: "inside",
+      },
     ],
-    series
+    series,
   });
 }
 
 function setSelectOptions(files) {
-  csvSelect.innerHTML = '';
-  const placeholder = document.createElement('option');
-  placeholder.textContent = '请选择';
-  placeholder.value = '';
+  csvSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.textContent = "请选择";
+  placeholder.value = "";
   csvSelect.appendChild(placeholder);
 
-  files.forEach((file) => {
-    const option = document.createElement('option');
+  files.forEach(file => {
+    const option = document.createElement("option");
     option.value = file;
     option.textContent = file;
     csvSelect.appendChild(option);
@@ -105,7 +107,7 @@ function setSelectOptions(files) {
 async function handleFolderSelection() {
   const result = await window.electronAPI.selectFolder();
   if (!result || !result.folder) {
-    folderStatus.textContent = '未选择文件夹';
+    folderStatus.textContent = "未选择文件夹";
     setSelectOptions([]);
     updateChart(null);
     return;
@@ -127,46 +129,46 @@ async function handleCsvSelection() {
   updateChart(payload);
 }
 
-selectFolderButton.addEventListener('click', handleFolderSelection);
-csvSelect.addEventListener('change', handleCsvSelection);
+selectFolderButton.addEventListener("click", handleFolderSelection);
+csvSelect.addEventListener("change", handleCsvSelection);
 
-window.addEventListener('resize', () => {
+window.addEventListener("resize", () => {
   chart.resize();
 });
 
 function getDeployPayload() {
   return {
     ip: deployIpInput.value.trim(),
-    username: deployUserInput.value.trim() || 'root',
-    password: deployPasswordInput.value
+    username: deployUserInput.value.trim() || "root",
+    password: deployPasswordInput.value,
   };
 }
 
 async function handleDeploy() {
   const payload = getDeployPayload();
-  deployStatus.textContent = '正在部署...';
+  deployStatus.textContent = "正在部署...";
   const result = await window.electronAPI.deployScript(payload);
-  deployStatus.textContent = result?.message || '部署完成';
+  deployStatus.textContent = result?.message || "部署完成";
 }
 
 async function handleDownloadCsv() {
   const payload = getDeployPayload();
-  deployStatus.textContent = '正在下载 CSV...';
+  deployStatus.textContent = "正在下载 CSV...";
   const result = await window.electronAPI.downloadCsv(payload);
-  deployStatus.textContent = result?.message || '下载完成';
+  deployStatus.textContent = result?.message || "下载完成";
 }
 
-deployStartButton.addEventListener('click', handleDeploy);
-downloadCsvButton.addEventListener('click', handleDownloadCsv);
+deployStartButton.addEventListener("click", handleDeploy);
+downloadCsvButton.addEventListener("click", handleDownloadCsv);
 
-viewButtons.forEach((button) => {
-  button.addEventListener('click', () => {
+viewButtons.forEach(button => {
+  button.addEventListener("click", () => {
     const target = button.dataset.viewTarget;
-    viewButtons.forEach((item) => {
-      item.classList.toggle('is-active', item === button);
+    viewButtons.forEach(item => {
+      item.classList.toggle("is-active", item === button);
     });
-    viewPanels.forEach((panel) => {
-      panel.classList.toggle('is-active', panel.dataset.view === target);
+    viewPanels.forEach(panel => {
+      panel.classList.toggle("is-active", panel.dataset.view === target);
     });
     chart.resize();
   });

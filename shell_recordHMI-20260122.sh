@@ -118,7 +118,7 @@ while :; do
 
   # 取 PID（ps + grep），只取第一条，避免多行破坏 CSV
   nod_pid=$(get_pid "nodejs")
-  web_pid=$(get_pid_i "webengine -platform eglfs")
+  web_pid=$(get_pid_i "webengine")
   bm_pid=$(get_pid "backmanage")
   qtweb_pid=$(get_pid "QtWebEngineProcess")
   uonline_pid=$(get_pid "go_uOnline")

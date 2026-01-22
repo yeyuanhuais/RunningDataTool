@@ -1,2 +1,8 @@
 node_modules/
 .DS_Store
+
+# 忽略 dest 目录下所有内容
+dest/*
+
+# 但保留这个 exe 文件
+!dest/Running Data Tool 0.1.0.exe

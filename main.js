@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 const WINDOW_CONFIG = {
   width: 1200,
   height: 800,
+  icon: path.join(__dirname, '/build/ico.png'), // ← 这里
   webPreferences: {
     preload: path.join(__dirname, "preload.js"),
     contextIsolation: true,
@@ -44,24 +45,39 @@ function formatTimestamp(value) {
   if (value === undefined || value === null) {
     return "";
   }
+
   const raw = String(value).trim();
   if (!raw) {
     return "";
   }
-  const dateMatch = raw.match(/^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::(\d{2}))(?::(\d{2}))?)?$/);
+
+  // ✅ 新增：yyyyMMdd-HHmmss
+  const compactMatch = raw.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/);
+  if (compactMatch) {
+    const [, y, m, d, hh, mm, ss] = compactMatch;
+    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+  }
+
+  // 原有：yyyy-MM-dd HH:mm:ss / yyyy/MM/dd HH:mm:ss
+  const dateMatch = raw.match(
+    /^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::(\d{2}))(?::(\d{2}))?)?$/
+  );
   if (dateMatch) {
     const [, year, month, day, hour = "00", minute = "00", second = "00"] = dateMatch;
     return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
   }
-  const epochMatch = raw.match(/^\d{10,13}$/);
-  if (epochMatch) {
+
+  // 原有：epoch 秒 / 毫秒
+  if (/^\d{10,13}$/.test(raw)) {
     const epoch = Number(raw.length === 10 ? `${raw}000` : raw);
     const date = new Date(epoch);
     if (!Number.isNaN(date.getTime())) {
-      const pad = (value) => String(value).padStart(2, "0");
-      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+             `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
     }
   }
+
   return raw.replace(/\//g, "-");
 }
 
@@ -422,6 +438,7 @@ async function downloadCsv({ ip, username, password }) {
 
 function createWindow() {
   const win = new BrowserWindow(WINDOW_CONFIG);
+  win.setMenuBarVisibility(false);
   win.loadFile("index.html");
 }
 

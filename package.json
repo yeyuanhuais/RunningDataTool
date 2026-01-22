@@ -3,15 +3,28 @@
   "version": "0.1.0",
   "description": "Electron tool to visualize CSV metrics as line charts",
   "main": "main.js",
-  "scripts": {
-    "start": "electron ."
-  },
   "author": "",
   "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win portable"
+  },
   "devDependencies": {
-    "electron": "^28.2.0"
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3"
   },
   "dependencies": {
     "echarts": "^5.5.0"
+  },
+  "build": {
+    "appId": "com.example.runningdatatool",
+    "productName": "Running Data Tool",
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.png"
+    },
+    "files": [
+      "**/*"
+    ]
   }
 }
