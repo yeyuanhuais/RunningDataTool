@@ -295,9 +295,9 @@ function escapeForDoubleQuotes(s) {
  * - 远端 ~/.ssh/authorized_keys 追加公钥（去重）
  * - chmod 600 authorized_keys
  *
- * password 参数在这里不直接用（没有 sshpass 就只能让 ssh 自己提示输入）
+ * password 参数存在时使用 ssh2 执行初始化，避免 ssh 交互卡住
  */
-async function ensureKeyAuth({ ip, username }) {
+async function ensureKeyAuth({ ip, username, password }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
   const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
@@ -345,10 +345,70 @@ async function ensureKeyAuth({ ip, username }) {
 
   const pubEsc = escapeForDoubleQuotes(pub);
 
+  async function runSsh2InitCommand(cmd, { timeoutMs = 60000 } = {}) {
+    if (!password) {
+      return { code: 1, stdout: "", stderr: "Missing password for ssh2 init" };
+    }
+    const { Client } = require("ssh2");
+    return new Promise(resolve => {
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      const conn = new Client();
+      const timer = setTimeout(() => {
+        try {
+          conn.end();
+        } catch (_) {}
+        finish({ code: 124, stdout, stderr: `Command timeout after ${timeoutMs}ms` });
+      }, timeoutMs);
+
+      conn.on("ready", () => {
+        conn.exec(cmd, (err, stream) => {
+          if (err) {
+            clearTimeout(timer);
+            conn.end();
+            finish({ code: 1, stdout, stderr: err.message });
+            return;
+          }
+          stream.on("data", data => {
+            stdout += data.toString();
+          });
+          stream.stderr.on("data", data => {
+            stderr += data.toString();
+          });
+          stream.on("close", code => {
+            clearTimeout(timer);
+            conn.end();
+            finish({ code: code == null ? 1 : code, stdout, stderr });
+          });
+        });
+      });
+
+      conn.on("error", err => {
+        clearTimeout(timer);
+        finish({ code: 1, stdout, stderr: err.message });
+      });
+
+      conn.connect({
+        host: ip,
+        username: user,
+        password,
+        readyTimeout: timeoutMs,
+      });
+    });
+  }
+
   async function runSshInitCommand(cmd, { timeoutMs = 60000, retries = 2, intervalMs = 2000 } = {}) {
     let last = null;
     for (let i = 0; i < retries; i += 1) {
-      const res = await runCommand("ssh", [...baseArgs, host, cmd], { timeoutMs });
+      const res = password
+        ? await runSsh2InitCommand(cmd, { timeoutMs })
+        : await runCommand("ssh", [...baseArgs, "-o", "BatchMode=yes", host, cmd], { timeoutMs });
       last = res;
       if (res.code === 0) return res;
       if (!isTransientSshError(res)) return res;
@@ -437,15 +497,17 @@ async function buildSshCommand({ ip, username, password }) {
 
   // 传了 password：走一次免密初始化（需要用户输入密码一次）
   if (keyProbe.ok) {
-    return { host, baseArgs, prefix: [], keyInitialized: true };
+    const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+    return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
   }
-  const init = await ensureKeyAuth({ ip, username });
+  const init = await ensureKeyAuth({ ip, username, password });
   if (!init.ok) {
     return { host, baseArgs, prefix: [], keyInitFailed: true, message: init.message };
   }
 
   // 初始化成功后，后续就不需要 password / sshpass
-  return { host, baseArgs, prefix: [], keyInitialized: true };
+  const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+  return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
 }
 
 /**
@@ -703,7 +765,10 @@ async function downloadCsv({ ip, username, password }) {
   }
 
   const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
-  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
+  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 30000 });
+  if (latestRes.code === 124) {
+    return { ok: false, message: "获取最新 CSV 超时：ssh 可能在等待交互。请确认免密初始化已完成。" };
+  }
   if (latestRes.code !== 0) {
     return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
   }
