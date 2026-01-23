@@ -497,7 +497,8 @@ async function buildSshCommand({ ip, username, password }) {
 
   // 传了 password：走一次免密初始化（需要用户输入密码一次）
   if (keyProbe.ok) {
-    return { host, baseArgs, prefix: [], keyInitialized: true };
+    const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+    return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
   }
   const init = await ensureKeyAuth({ ip, username, password });
   if (!init.ok) {
@@ -505,7 +506,8 @@ async function buildSshCommand({ ip, username, password }) {
   }
 
   // 初始化成功后，后续就不需要 password / sshpass
-  return { host, baseArgs, prefix: [], keyInitialized: true };
+  const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+  return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
 }
 
 /**
@@ -763,7 +765,10 @@ async function downloadCsv({ ip, username, password }) {
   }
 
   const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
-  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
+  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 30000 });
+  if (latestRes.code === 124) {
+    return { ok: false, message: "获取最新 CSV 超时：ssh 可能在等待交互。请确认免密初始化已完成。" };
+  }
   if (latestRes.code !== 0) {
     return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
   }
