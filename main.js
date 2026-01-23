@@ -665,7 +665,17 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: message || "免密初始化失败" };
   }
 
-  const scpArgs = [...prefix, "scp", "-r", ...baseArgs, `${host}:/hmi/data/*.csv`, destination];
+  const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
+  const latestRes = await runCommand("ssh", [...prefix, "ssh", ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
+  if (latestRes.code !== 0) {
+    return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
+  }
+  const latestPath = (latestRes.stdout || "").trim();
+  if (!latestPath) {
+    return { ok: false, message: "未找到 CSV 文件" };
+  }
+
+  const scpArgs = [...prefix, "scp", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
   const scpResult = await runCommand(scpArgs[0], scpArgs.slice(1));
   if (scpResult.code !== 0) {
     return { ok: false, message: `下载失败: ${scpResult.stderr || scpResult.stdout}` };
