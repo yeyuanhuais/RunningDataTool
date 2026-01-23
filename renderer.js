@@ -40,6 +40,7 @@ function updateChart(payload) {
   if (!payload) {
     chart.clear();
     updateMetricList([]);
+    updatePidList([]);
     return;
   }
 
@@ -141,6 +142,13 @@ async function handleFolderRefresh() {
     return;
   }
   const result = await window.electronAPI.refreshFolder(currentFolder);
+  if (!result || !result.folder) {
+    currentFolder = null;
+    folderStatus.textContent = "未选择文件夹";
+    setSelectOptions([]);
+    updateChart(null);
+    return;
+  }
   currentFolder = result.folder;
   folderStatus.textContent = `当前文件夹: ${result.folder}`;
   setSelectOptions(result.files);
