@@ -300,7 +300,7 @@ function escapeForDoubleQuotes(s) {
 async function ensureKeyAuth({ ip, username }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
-  const baseArgs = sshBaseArgs();
+  const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
   const hostKey = host;
 
   if (isHostKeyReady(hostKey)) {
@@ -345,10 +345,22 @@ async function ensureKeyAuth({ ip, username }) {
 
   const pubEsc = escapeForDoubleQuotes(pub);
 
+  async function runSshInitCommand(cmd, { timeoutMs = 60000, retries = 2, intervalMs = 2000 } = {}) {
+    let last = null;
+    for (let i = 0; i < retries; i += 1) {
+      const res = await runCommand("ssh", [...baseArgs, host, cmd], { timeoutMs });
+      last = res;
+      if (res.code === 0) return res;
+      if (!isTransientSshError(res)) return res;
+      await sleep(intervalMs);
+    }
+    return last || { code: 1, stdout: "", stderr: "SSH init retry failed" };
+  }
+
   // 3.1 远端准备目录/文件
   {
     const cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys";
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `远端准备 ~/.ssh 失败: ${res.stderr || res.stdout}` };
     }
@@ -357,7 +369,7 @@ async function ensureKeyAuth({ ip, username }) {
   // 3.2 去重追加（bash -lc 保证 grep/echo 行为一致）
   {
     const cmd = `bash -lc "grep -qxF \\"${pubEsc}\\" ~/.ssh/authorized_keys || echo \\"${pubEsc}\\" >> ~/.ssh/authorized_keys"`;
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `写入 authorized_keys 失败: ${res.stderr || res.stdout}` };
     }
@@ -366,7 +378,7 @@ async function ensureKeyAuth({ ip, username }) {
   // 3.3 chmod 600
   {
     const cmd = "chmod 600 ~/.ssh/authorized_keys";
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `chmod authorized_keys 失败: ${res.stderr || res.stdout}` };
     }
