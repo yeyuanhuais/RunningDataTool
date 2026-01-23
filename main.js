@@ -433,6 +433,18 @@ function isSshDisconnectLike(res) {
   );
 }
 
+function isTransientSshError(res) {
+  const s = ((res && (res.stderr || "")) + " " + (res && (res.stdout || ""))).toLowerCase();
+  return (
+    s.includes("banner exchange") ||
+    s.includes("connection refused") ||
+    s.includes("connection reset") ||
+    s.includes("connection timed out") ||
+    s.includes("closed by remote host") ||
+    s.includes("broken pipe")
+  );
+}
+
 /**
  * 部署脚本：
  * - 可选：先 reboot
@@ -503,6 +515,18 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
     return runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs });
   }
 
+  async function sshExecWithRetry(cmd, { timeoutMs = 15000, retries = 3, intervalMs = 2000 } = {}) {
+    let last = null;
+    for (let i = 0; i < retries; i += 1) {
+      const res = await sshExec(cmd, timeoutMs);
+      last = res;
+      if (res.code === 0) return res;
+      if (!isTransientSshError(res)) return res;
+      await sleep(intervalMs);
+    }
+    return last || { code: 1, stdout: "", stderr: "SSH retry failed" };
+  }
+
   /**
    * 上传脚本
    */
@@ -535,7 +559,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 0) 先做一次上线探测（非必须，但能更快给出错误提示） ----------
   {
-    const probeRes = await sshExec(onlineProbeCmd, 15000);
+    const probeRes = await sshExecWithRetry(onlineProbeCmd, { timeoutMs: 15000, retries: 2, intervalMs: 2000 });
     if (probeRes.code === 124) {
       return { ok: false, message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先完成免密初始化。" };
     }
@@ -547,7 +571,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
   // ---------- 1) 检查远端脚本是否已存在，不存在则上传 ----------
   let exists = false;
   {
-    const checkRes = await sshExec(existsCmd, 20000);
+    const checkRes = await sshExecWithRetry(existsCmd, { timeoutMs: 20000, retries: 3, intervalMs: 2000 });
     if (checkRes.code === 124) {
       return { ok: false, message: "检查远端失败：ssh 超时（可能在等待交互）。请确认免密已完成。" };
     }
@@ -564,7 +588,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 2) 如需要：先 reboot ----------
   if (rebootFirst) {
-    const rbRes = await sshExec(rebootCmd, 15000);
+    const rbRes = await sshExecWithRetry(rebootCmd, { timeoutMs: 15000, retries: 2, intervalMs: 2000 });
 
     // reboot 后断开是正常的：可能 code != 0 或 stderr 有 connection closed
     // 这里的判定策略：只要不是明显“命令不存在/权限拒绝”，大概率认为 reboot 已触发
@@ -585,7 +609,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 4) 上线后启动脚本（单实例） ----------
   {
-    const sshRes = await sshExec(startCmd, 20000);
+    const sshRes = await sshExecWithRetry(startCmd, { timeoutMs: 20000, retries: 3, intervalMs: 2000 });
 
     if (sshRes.code === 124) {
       return { ok: false, message: "执行超时：远端 shell 阻塞或 ssh 不稳定。" };
