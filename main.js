@@ -23,21 +23,46 @@ function normalizeNumeric(value) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function parseCsv(content) {
-  const lines = content.split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) {
+function parseCsvLine(headers, delimiter, line) {
+  const parts = line.split(delimiter);
+  const row = {};
+  headers.forEach((header, index) => {
+    row[header] = parts[index] ? parts[index].trim() : "";
+  });
+  return row;
+}
+
+async function parseCsvStream(filePath, { maxRows = 5000, avgLineBytes = 80 } = {}) {
+  const fsStat = fs.statSync(filePath);
+  const estimatedLines = Math.max(1, Math.ceil(fsStat.size / avgLineBytes));
+  const stride = Math.max(1, Math.ceil(estimatedLines / maxRows));
+
+  const readline = require("readline");
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  let headers = [];
+  let delimiter = ",";
+  let lineIndex = 0;
+  const rows = [];
+
+  for await (const line of rl) {
+    if (!line) continue;
+    if (lineIndex === 0) {
+      delimiter = line.includes("\t") ? "\t" : ",";
+      headers = line.split(delimiter).map(header => header.trim());
+      lineIndex += 1;
+      continue;
+    }
+    if (lineIndex % stride === 0) {
+      rows.push(parseCsvLine(headers, delimiter, line));
+    }
+    lineIndex += 1;
+  }
+
+  if (headers.length === 0) {
     return { headers: [], rows: [] };
   }
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const headers = lines[0].split(delimiter).map(header => header.trim());
-  const rows = lines.slice(1).map(line => {
-    const parts = line.split(delimiter);
-    const row = {};
-    headers.forEach((header, index) => {
-      row[header] = parts[index] ? parts[index].trim() : "";
-    });
-    return row;
-  });
   return { headers, rows };
 }
 
@@ -138,10 +163,10 @@ async function refreshFolder(folder) {
   const csvFiles = entries.filter(entry => entry.toLowerCase().endsWith(".csv"));
   return { folder, files: csvFiles };
 }
-function loadCsvFile(folder, filename) {
+async function loadCsvFile(folder, filename) {
   const fullPath = path.join(folder, filename);
-  const content = fs.readFileSync(fullPath, "utf-8");
-  return buildSeries(parseCsv(content));
+  const parsed = await parseCsvStream(fullPath);
+  return buildSeries(parsed);
 }
 
 function runCommand(command, args, options) {
@@ -213,6 +238,52 @@ function getSshDir() {
   return path.join(os.homedir(), ".ssh");
 }
 
+function getKeyCachePath() {
+  // 缓存免密初始化成功的主机，减少重复探测
+  try {
+    return path.join(app.getPath("userData"), "known-key-hosts.json");
+  } catch (_) {
+    // app 可能尚未 ready，这里回退到用户目录
+    const os = require("os");
+    return path.join(os.homedir(), ".running-data-tool", "known-key-hosts.json");
+  }
+}
+
+function loadKeyCache() {
+  const cachePath = getKeyCachePath();
+  try {
+    if (!fs.existsSync(cachePath)) return { hosts: {} };
+    const raw = fs.readFileSync(cachePath, "utf-8");
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return { hosts: {} };
+    return { hosts: data.hosts || {} };
+  } catch (_) {
+    return { hosts: {} };
+  }
+}
+
+function saveKeyCache(cache) {
+  const cachePath = getKeyCachePath();
+  try {
+    const dir = path.dirname(cachePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify(cache || { hosts: {} }, null, 2), "utf-8");
+  } catch (_) {
+    // 忽略缓存写入失败
+  }
+}
+
+function markHostKeyReady(hostKey) {
+  const cache = loadKeyCache();
+  cache.hosts[hostKey] = { ready: true, ts: Date.now() };
+  saveKeyCache(cache);
+}
+
+function isHostKeyReady(hostKey) {
+  const cache = loadKeyCache();
+  return !!(cache.hosts && cache.hosts[hostKey] && cache.hosts[hostKey].ready);
+}
+
 function escapeForDoubleQuotes(s) {
   // 远端 bash -lc "..."; 这里要转义双引号与反斜杠
   return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').trim();
@@ -229,7 +300,12 @@ function escapeForDoubleQuotes(s) {
 async function ensureKeyAuth({ ip, username }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
-  const baseArgs = sshBaseArgs();
+  const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
+  const hostKey = host;
+
+  if (isHostKeyReady(hostKey)) {
+    return { ok: true, message: "免密已缓存" };
+  }
 
   // 1) 检查本机 ssh / ssh-keygen 是否存在
   const hasSsh = await commandExists(process.platform === "win32" ? "ssh" : "ssh");
@@ -269,10 +345,22 @@ async function ensureKeyAuth({ ip, username }) {
 
   const pubEsc = escapeForDoubleQuotes(pub);
 
+  async function runSshInitCommand(cmd, { timeoutMs = 60000, retries = 2, intervalMs = 2000 } = {}) {
+    let last = null;
+    for (let i = 0; i < retries; i += 1) {
+      const res = await runCommand("ssh", [...baseArgs, host, cmd], { timeoutMs });
+      last = res;
+      if (res.code === 0) return res;
+      if (!isTransientSshError(res)) return res;
+      await sleep(intervalMs);
+    }
+    return last || { code: 1, stdout: "", stderr: "SSH init retry failed" };
+  }
+
   // 3.1 远端准备目录/文件
   {
     const cmd = "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys";
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `远端准备 ~/.ssh 失败: ${res.stderr || res.stdout}` };
     }
@@ -281,7 +369,7 @@ async function ensureKeyAuth({ ip, username }) {
   // 3.2 去重追加（bash -lc 保证 grep/echo 行为一致）
   {
     const cmd = `bash -lc "grep -qxF \\"${pubEsc}\\" ~/.ssh/authorized_keys || echo \\"${pubEsc}\\" >> ~/.ssh/authorized_keys"`;
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `写入 authorized_keys 失败: ${res.stderr || res.stdout}` };
     }
@@ -290,13 +378,42 @@ async function ensureKeyAuth({ ip, username }) {
   // 3.3 chmod 600
   {
     const cmd = "chmod 600 ~/.ssh/authorized_keys";
-    const res = await runCommand("ssh", [...baseArgs, host, cmd]);
+    const res = await runSshInitCommand(cmd);
     if (res.code !== 0) {
       return { ok: false, message: `chmod authorized_keys 失败: ${res.stderr || res.stdout}` };
     }
   }
 
+  markHostKeyReady(hostKey);
   return { ok: true, message: "免密初始化完成" };
+}
+
+/**
+ * 快速探测是否已免密（避免重复执行）
+ */
+async function checkKeyAuth({ ip, username }) {
+  const user = username || "root";
+  const host = `${user}@${ip}`;
+  const hostKey = host;
+
+  if (isHostKeyReady(hostKey)) {
+    return { ok: true, cached: true };
+  }
+
+  const baseArgs = [
+    ...sshBaseArgs(),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=5",
+  ];
+  const probeCmd = "echo __KEY_OK__";
+  const res = await runCommand("ssh", [...baseArgs, host, probeCmd], { timeoutMs: 8000 });
+  if (res.code === 0 && (res.stdout || "").includes("__KEY_OK__")) {
+    markHostKeyReady(hostKey);
+    return { ok: true };
+  }
+  return { ok: false };
 }
 
 /**
@@ -307,14 +424,21 @@ async function ensureKeyAuth({ ip, username }) {
 async function buildSshCommand({ ip, username, password }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
-  const baseArgs = sshBaseArgs();
+  const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
 
-  // 不传 password：直接假设用户已免密
+  // 先尝试快速探测免密，避免重复走初始化
+  const keyProbe = await checkKeyAuth({ ip, username });
+
+  // 不传 password：直接假设用户已免密，但开启 BatchMode，避免卡在交互
   if (!password) {
-    return { host, baseArgs, prefix: [] };
+    const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+    return { host, baseArgs: noPromptArgs, prefix: [], keyReady: keyProbe.ok };
   }
 
   // 传了 password：走一次免密初始化（需要用户输入密码一次）
+  if (keyProbe.ok) {
+    return { host, baseArgs, prefix: [], keyInitialized: true };
+  }
   const init = await ensureKeyAuth({ ip, username });
   if (!init.ok) {
     return { host, baseArgs, prefix: [], keyInitFailed: true, message: init.message };
@@ -343,6 +467,18 @@ function isSshDisconnectLike(res) {
     s.includes("connection timed out") ||
     s.includes("closed by remote host") ||
     s.includes("connection refused")
+  );
+}
+
+function isTransientSshError(res) {
+  const s = ((res && (res.stderr || "")) + " " + (res && (res.stdout || ""))).toLowerCase();
+  return (
+    s.includes("banner exchange") ||
+    s.includes("connection refused") ||
+    s.includes("connection reset") ||
+    s.includes("connection timed out") ||
+    s.includes("closed by remote host") ||
+    s.includes("broken pipe")
   );
 }
 
@@ -416,6 +552,18 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
     return runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs });
   }
 
+  async function sshExecWithRetry(cmd, { timeoutMs = 15000, retries = 3, intervalMs = 2000 } = {}) {
+    let last = null;
+    for (let i = 0; i < retries; i += 1) {
+      const res = await sshExec(cmd, timeoutMs);
+      last = res;
+      if (res.code === 0) return res;
+      if (!isTransientSshError(res)) return res;
+      await sleep(intervalMs);
+    }
+    return last || { code: 1, stdout: "", stderr: "SSH retry failed" };
+  }
+
   /**
    * 上传脚本
    */
@@ -448,7 +596,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 0) 先做一次上线探测（非必须，但能更快给出错误提示） ----------
   {
-    const probeRes = await sshExec(onlineProbeCmd, 15000);
+    const probeRes = await sshExecWithRetry(onlineProbeCmd, { timeoutMs: 15000, retries: 2, intervalMs: 2000 });
     if (probeRes.code === 124) {
       return { ok: false, message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先完成免密初始化。" };
     }
@@ -460,7 +608,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
   // ---------- 1) 检查远端脚本是否已存在，不存在则上传 ----------
   let exists = false;
   {
-    const checkRes = await sshExec(existsCmd, 20000);
+    const checkRes = await sshExecWithRetry(existsCmd, { timeoutMs: 20000, retries: 3, intervalMs: 2000 });
     if (checkRes.code === 124) {
       return { ok: false, message: "检查远端失败：ssh 超时（可能在等待交互）。请确认免密已完成。" };
     }
@@ -477,7 +625,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 2) 如需要：先 reboot ----------
   if (rebootFirst) {
-    const rbRes = await sshExec(rebootCmd, 15000);
+    const rbRes = await sshExecWithRetry(rebootCmd, { timeoutMs: 15000, retries: 2, intervalMs: 2000 });
 
     // reboot 后断开是正常的：可能 code != 0 或 stderr 有 connection closed
     // 这里的判定策略：只要不是明显“命令不存在/权限拒绝”，大概率认为 reboot 已触发
@@ -498,7 +646,7 @@ async function deployScript({ ip, username, password, rebootFirst = true }) {
 
   // ---------- 4) 上线后启动脚本（单实例） ----------
   {
-    const sshRes = await sshExec(startCmd, 20000);
+    const sshRes = await sshExecWithRetry(startCmd, { timeoutMs: 20000, retries: 3, intervalMs: 2000 });
 
     if (sshRes.code === 124) {
       return { ok: false, message: "执行超时：远端 shell 阻塞或 ssh 不稳定。" };
@@ -554,7 +702,17 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: message || "免密初始化失败" };
   }
 
-  const scpArgs = [...prefix, "scp", "-r", ...baseArgs, `${host}:/hmi/data/*.csv`, destination];
+  const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
+  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
+  if (latestRes.code !== 0) {
+    return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
+  }
+  const latestPath = (latestRes.stdout || "").trim();
+  if (!latestPath) {
+    return { ok: false, message: "未找到 CSV 文件" };
+  }
+
+  const scpArgs = [...prefix, "scp", "-C", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
   const scpResult = await runCommand(scpArgs[0], scpArgs.slice(1));
   if (scpResult.code !== 0) {
     return { ok: false, message: `下载失败: ${scpResult.stderr || scpResult.stdout}` };
