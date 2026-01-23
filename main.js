@@ -23,21 +23,46 @@ function normalizeNumeric(value) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function parseCsv(content) {
-  const lines = content.split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) {
+function parseCsvLine(headers, delimiter, line) {
+  const parts = line.split(delimiter);
+  const row = {};
+  headers.forEach((header, index) => {
+    row[header] = parts[index] ? parts[index].trim() : "";
+  });
+  return row;
+}
+
+async function parseCsvStream(filePath, { maxRows = 5000, avgLineBytes = 80 } = {}) {
+  const fsStat = fs.statSync(filePath);
+  const estimatedLines = Math.max(1, Math.ceil(fsStat.size / avgLineBytes));
+  const stride = Math.max(1, Math.ceil(estimatedLines / maxRows));
+
+  const readline = require("readline");
+  const stream = fs.createReadStream(filePath, { encoding: "utf-8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  let headers = [];
+  let delimiter = ",";
+  let lineIndex = 0;
+  const rows = [];
+
+  for await (const line of rl) {
+    if (!line) continue;
+    if (lineIndex === 0) {
+      delimiter = line.includes("\t") ? "\t" : ",";
+      headers = line.split(delimiter).map(header => header.trim());
+      lineIndex += 1;
+      continue;
+    }
+    if (lineIndex % stride === 0) {
+      rows.push(parseCsvLine(headers, delimiter, line));
+    }
+    lineIndex += 1;
+  }
+
+  if (headers.length === 0) {
     return { headers: [], rows: [] };
   }
-  const delimiter = lines[0].includes("\t") ? "\t" : ",";
-  const headers = lines[0].split(delimiter).map(header => header.trim());
-  const rows = lines.slice(1).map(line => {
-    const parts = line.split(delimiter);
-    const row = {};
-    headers.forEach((header, index) => {
-      row[header] = parts[index] ? parts[index].trim() : "";
-    });
-    return row;
-  });
   return { headers, rows };
 }
 
@@ -138,10 +163,10 @@ async function refreshFolder(folder) {
   const csvFiles = entries.filter(entry => entry.toLowerCase().endsWith(".csv"));
   return { folder, files: csvFiles };
 }
-function loadCsvFile(folder, filename) {
+async function loadCsvFile(folder, filename) {
   const fullPath = path.join(folder, filename);
-  const content = fs.readFileSync(fullPath, "utf-8");
-  return buildSeries(parseCsv(content));
+  const parsed = await parseCsvStream(fullPath);
+  return buildSeries(parsed);
 }
 
 function runCommand(command, args, options) {
@@ -675,7 +700,7 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: "未找到 CSV 文件" };
   }
 
-  const scpArgs = [...prefix, "scp", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
+  const scpArgs = [...prefix, "scp", "-C", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
   const scpResult = await runCommand(scpArgs[0], scpArgs.slice(1));
   if (scpResult.code !== 0) {
     return { ok: false, message: `下载失败: ${scpResult.stderr || scpResult.stdout}` };
