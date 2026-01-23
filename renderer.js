@@ -169,7 +169,7 @@ function getDeployPayload() {
     ip: deployIpInput.value.trim(),
     username: deployUserInput.value.trim() || "root",
     password: deployPasswordInput.value,
-    rebootFirst: deployRebootInput.value === "on",
+    rebootFirst: !!deployRebootInput.checked,
   };
 }
 
