@@ -666,7 +666,7 @@ async function downloadCsv({ ip, username, password }) {
   }
 
   const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
-  const latestRes = await runCommand("ssh", [...prefix, "ssh", ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
+  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 15000 });
   if (latestRes.code !== 0) {
     return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
   }
