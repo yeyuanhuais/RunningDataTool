@@ -213,6 +213,52 @@ function getSshDir() {
   return path.join(os.homedir(), ".ssh");
 }
 
+function getKeyCachePath() {
+  // 缓存免密初始化成功的主机，减少重复探测
+  try {
+    return path.join(app.getPath("userData"), "known-key-hosts.json");
+  } catch (_) {
+    // app 可能尚未 ready，这里回退到用户目录
+    const os = require("os");
+    return path.join(os.homedir(), ".running-data-tool", "known-key-hosts.json");
+  }
+}
+
+function loadKeyCache() {
+  const cachePath = getKeyCachePath();
+  try {
+    if (!fs.existsSync(cachePath)) return { hosts: {} };
+    const raw = fs.readFileSync(cachePath, "utf-8");
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== "object") return { hosts: {} };
+    return { hosts: data.hosts || {} };
+  } catch (_) {
+    return { hosts: {} };
+  }
+}
+
+function saveKeyCache(cache) {
+  const cachePath = getKeyCachePath();
+  try {
+    const dir = path.dirname(cachePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(cachePath, JSON.stringify(cache || { hosts: {} }, null, 2), "utf-8");
+  } catch (_) {
+    // 忽略缓存写入失败
+  }
+}
+
+function markHostKeyReady(hostKey) {
+  const cache = loadKeyCache();
+  cache.hosts[hostKey] = { ready: true, ts: Date.now() };
+  saveKeyCache(cache);
+}
+
+function isHostKeyReady(hostKey) {
+  const cache = loadKeyCache();
+  return !!(cache.hosts && cache.hosts[hostKey] && cache.hosts[hostKey].ready);
+}
+
 function escapeForDoubleQuotes(s) {
   // 远端 bash -lc "..."; 这里要转义双引号与反斜杠
   return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').trim();
@@ -230,6 +276,11 @@ async function ensureKeyAuth({ ip, username }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
   const baseArgs = sshBaseArgs();
+  const hostKey = host;
+
+  if (isHostKeyReady(hostKey)) {
+    return { ok: true, message: "免密已缓存" };
+  }
 
   // 1) 检查本机 ssh / ssh-keygen 是否存在
   const hasSsh = await commandExists(process.platform === "win32" ? "ssh" : "ssh");
@@ -296,7 +347,36 @@ async function ensureKeyAuth({ ip, username }) {
     }
   }
 
+  markHostKeyReady(hostKey);
   return { ok: true, message: "免密初始化完成" };
+}
+
+/**
+ * 快速探测是否已免密（避免重复执行）
+ */
+async function checkKeyAuth({ ip, username }) {
+  const user = username || "root";
+  const host = `${user}@${ip}`;
+  const hostKey = host;
+
+  if (isHostKeyReady(hostKey)) {
+    return { ok: true, cached: true };
+  }
+
+  const baseArgs = [
+    ...sshBaseArgs(),
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=5",
+  ];
+  const probeCmd = "echo __KEY_OK__";
+  const res = await runCommand("ssh", [...baseArgs, host, probeCmd], { timeoutMs: 8000 });
+  if (res.code === 0 && (res.stdout || "").includes("__KEY_OK__")) {
+    markHostKeyReady(hostKey);
+    return { ok: true };
+  }
+  return { ok: false };
 }
 
 /**
@@ -307,14 +387,21 @@ async function ensureKeyAuth({ ip, username }) {
 async function buildSshCommand({ ip, username, password }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
-  const baseArgs = sshBaseArgs();
+  const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
 
-  // 不传 password：直接假设用户已免密
+  // 先尝试快速探测免密，避免重复走初始化
+  const keyProbe = await checkKeyAuth({ ip, username });
+
+  // 不传 password：直接假设用户已免密，但开启 BatchMode，避免卡在交互
   if (!password) {
-    return { host, baseArgs, prefix: [] };
+    const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
+    return { host, baseArgs: noPromptArgs, prefix: [], keyReady: keyProbe.ok };
   }
 
   // 传了 password：走一次免密初始化（需要用户输入密码一次）
+  if (keyProbe.ok) {
+    return { host, baseArgs, prefix: [], keyInitialized: true };
+  }
   const init = await ensureKeyAuth({ ip, username });
   if (!init.ok) {
     return { host, baseArgs, prefix: [], keyInitFailed: true, message: init.message };
