@@ -72,15 +72,19 @@ function getSshDir() {
   return path.join(os.homedir(), ".ssh");
 }
 
+let keyCachePath = "";
+
 function getKeyCachePath() {
   // 缓存免密初始化成功的主机，减少重复探测
+  if (keyCachePath) return keyCachePath;
   try {
-    return path.join(app.getPath("userData"), "known-key-hosts.json");
+    keyCachePath = path.join(app.getPath("userData"), "known-key-hosts.json");
   } catch (_) {
-    // app 可能尚未 ready，这里回退到用户目录
+    // app 可能尚未 ready，这里回退到用户目录，且保持本次路径不再切换
     const os = require("os");
-    return path.join(os.homedir(), ".running-data-tool", "known-key-hosts.json");
+    keyCachePath = path.join(os.homedir(), ".running-data-tool", "known-key-hosts.json");
   }
+  return keyCachePath;
 }
 
 function loadKeyCache() {
@@ -378,6 +382,14 @@ function isTransientSshError(res) {
   );
 }
 
+function formatSshAuthMessage(res, fallback) {
+  const output = ((res && (res.stderr || "")) + " " + (res && (res.stdout || ""))).toLowerCase();
+  if (output.includes("permission denied") || output.includes("publickey")) {
+    return "权限被拒绝：请确认用户名/密码正确，或先在设备上追加本机公钥到 ~/.ssh/authorized_keys（可参考 PowerShell 脚本方式）。";
+  }
+  return fallback;
+}
+
 function resolveRootDir(rootDir) {
   if (rootDir) return rootDir;
   try {
@@ -479,7 +491,8 @@ async function deployScript({ ip, username, password, rebootFirst = true, rootDi
       return { ok: false, message: "上传超时：scp 可能在等待交互。请先确认免密已完成。" };
     }
     if (scpRes.code !== 0) {
-      return { ok: false, message: `拷贝失败: ${scpRes.stderr || scpRes.stdout}` };
+      const baseMessage = `拷贝失败: ${scpRes.stderr || scpRes.stdout}`;
+      return { ok: false, message: formatSshAuthMessage(scpRes, baseMessage) };
     }
     return { ok: true };
   }
@@ -506,7 +519,8 @@ async function deployScript({ ip, username, password, rebootFirst = true, rootDi
       return { ok: false, message: "连接超时：ssh 可能在等待交互（首次连接确认/输入密码）。请先完成免密初始化。" };
     }
     if (probeRes.code !== 0) {
-      return { ok: false, message: `无法连接设备: ${probeRes.stderr || probeRes.stdout}` };
+      const baseMessage = `无法连接设备: ${probeRes.stderr || probeRes.stdout}`;
+      return { ok: false, message: formatSshAuthMessage(probeRes, baseMessage) };
     }
   }
 
@@ -613,7 +627,8 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: "获取最新 CSV 超时：ssh 可能在等待交互。请确认免密初始化已完成。" };
   }
   if (latestRes.code !== 0) {
-    return { ok: false, message: `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}` };
+    const baseMessage = `获取最新 CSV 失败: ${latestRes.stderr || latestRes.stdout}`;
+    return { ok: false, message: formatSshAuthMessage(latestRes, baseMessage) };
   }
   const latestPath = (latestRes.stdout || "").trim();
   if (!latestPath) {
@@ -623,7 +638,8 @@ async function downloadCsv({ ip, username, password }) {
   const scpArgs = [...prefix, "scp", "-C", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
   const scpResult = await runCommand(scpArgs[0], scpArgs.slice(1));
   if (scpResult.code !== 0) {
-    return { ok: false, message: `下载失败: ${scpResult.stderr || scpResult.stdout}` };
+    const baseMessage = `下载失败: ${scpResult.stderr || scpResult.stdout}`;
+    return { ok: false, message: formatSshAuthMessage(scpResult, baseMessage) };
   }
   return { ok: true, message: `CSV 已下载到 ${destination}` };
 }
