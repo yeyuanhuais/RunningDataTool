@@ -127,6 +127,192 @@ function escapeForDoubleQuotes(s) {
   return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').trim();
 }
 
+function getPrivateKey() {
+  const sshDir = getSshDir();
+  const keyPath = path.join(sshDir, "id_rsa");
+  try {
+    if (!fs.existsSync(keyPath)) return null;
+    return fs.readFileSync(keyPath, "utf-8");
+  } catch (_) {
+    return null;
+  }
+}
+
+function buildSsh2Config({ ip, username, password, readyTimeout = 15000 } = {}) {
+  if (!ip) return null;
+  const user = username || "root";
+  const config = {
+    host: ip,
+    username: user,
+    readyTimeout,
+    keepaliveInterval: 10000,
+    keepaliveCountMax: 3,
+  };
+  if (password) {
+    config.password = password;
+  } else {
+    const privateKey = getPrivateKey();
+    if (!privateKey) return null;
+    config.privateKey = privateKey;
+  }
+  return config;
+}
+
+async function runSsh2Command(config, cmd, { timeoutMs = 30000 } = {}) {
+  if (!config) {
+    return { code: 1, stdout: "", stderr: "Missing ssh2 config" };
+  }
+  const { Client } = require("ssh2");
+  return new Promise(resolve => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const conn = new Client();
+    const timer = setTimeout(() => {
+      try {
+        conn.end();
+      } catch (_) {}
+      finish({ code: 124, stdout, stderr: `Command timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    conn.on("ready", () => {
+      conn.exec(cmd, (err, stream) => {
+        if (err) {
+          clearTimeout(timer);
+          conn.end();
+          finish({ code: 1, stdout, stderr: err.message });
+          return;
+        }
+        stream.on("data", data => {
+          stdout += data.toString();
+        });
+        stream.stderr.on("data", data => {
+          stderr += data.toString();
+        });
+        stream.on("close", code => {
+          clearTimeout(timer);
+          conn.end();
+          finish({ code: code == null ? 1 : code, stdout, stderr });
+        });
+      });
+    });
+
+    conn.on("error", err => {
+      clearTimeout(timer);
+      finish({ code: 1, stdout, stderr: err.message });
+    });
+
+    conn.connect({ ...config, readyTimeout: timeoutMs });
+  });
+}
+
+async function runSsh2SftpUpload(config, localPath, remotePath, { timeoutMs = 60000 } = {}) {
+  if (!config) {
+    return { code: 1, stdout: "", stderr: "Missing ssh2 config" };
+  }
+  const { Client } = require("ssh2");
+  return new Promise(resolve => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const conn = new Client();
+    const timer = setTimeout(() => {
+      try {
+        conn.end();
+      } catch (_) {}
+      finish({ code: 124, stdout, stderr: `Command timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    conn.on("ready", () => {
+      conn.sftp((err, sftp) => {
+        if (err) {
+          clearTimeout(timer);
+          conn.end();
+          finish({ code: 1, stdout, stderr: err.message });
+          return;
+        }
+        sftp.fastPut(localPath, remotePath, putErr => {
+          clearTimeout(timer);
+          conn.end();
+          if (putErr) {
+            finish({ code: 1, stdout, stderr: putErr.message });
+            return;
+          }
+          finish({ code: 0, stdout, stderr: "" });
+        });
+      });
+    });
+
+    conn.on("error", err => {
+      clearTimeout(timer);
+      finish({ code: 1, stdout, stderr: err.message });
+    });
+
+    conn.connect({ ...config, readyTimeout: timeoutMs });
+  });
+}
+
+async function runSsh2SftpDownload(config, remotePath, localPath, { timeoutMs = 60000 } = {}) {
+  if (!config) {
+    return { code: 1, stdout: "", stderr: "Missing ssh2 config" };
+  }
+  const { Client } = require("ssh2");
+  return new Promise(resolve => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const conn = new Client();
+    const timer = setTimeout(() => {
+      try {
+        conn.end();
+      } catch (_) {}
+      finish({ code: 124, stdout, stderr: `Command timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    conn.on("ready", () => {
+      conn.sftp((err, sftp) => {
+        if (err) {
+          clearTimeout(timer);
+          conn.end();
+          finish({ code: 1, stdout, stderr: err.message });
+          return;
+        }
+        sftp.fastGet(remotePath, localPath, getErr => {
+          clearTimeout(timer);
+          conn.end();
+          if (getErr) {
+            finish({ code: 1, stdout, stderr: getErr.message });
+            return;
+          }
+          finish({ code: 0, stdout, stderr: "" });
+        });
+      });
+    });
+
+    conn.on("error", err => {
+      clearTimeout(timer);
+      finish({ code: 1, stdout, stderr: err.message });
+    });
+
+    conn.connect({ ...config, readyTimeout: timeoutMs });
+  });
+}
+
 /**
  * 确保免密已初始化：
  * - 本地生成 id_rsa / id_rsa.pub（若不存在）
@@ -289,7 +475,7 @@ async function ensureKeyAuth({ ip, username, password }) {
 /**
  * 快速探测是否已免密（避免重复执行）
  */
-async function checkKeyAuth({ ip, username }) {
+async function checkKeyAuth({ ip, username, ssh2Config }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
   const hostKey = host;
@@ -298,15 +484,14 @@ async function checkKeyAuth({ ip, username }) {
     return { ok: true, cached: true };
   }
 
-  const baseArgs = [
-    ...sshBaseArgs(),
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "ConnectTimeout=5",
-  ];
   const probeCmd = "echo __KEY_OK__";
-  const res = await runCommand("ssh", [...baseArgs, host, probeCmd], { timeoutMs: 8000 });
+  const res = ssh2Config
+    ? await runSsh2Command(ssh2Config, probeCmd, { timeoutMs: 8000 })
+    : await runCommand(
+        "ssh",
+        [...sshBaseArgs(), "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, probeCmd],
+        { timeoutMs: 8000 }
+      );
   if (res.code === 0 && (res.stdout || "").includes("__KEY_OK__")) {
     markHostKeyReady(hostKey);
     return { ok: true };
@@ -323,20 +508,24 @@ async function buildSshCommand({ ip, username, password }) {
   const user = username || "root";
   const host = `${user}@${ip}`;
   const baseArgs = [...sshBaseArgs(), "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"];
+  const keyOnlyConfig = buildSsh2Config({ ip, username });
 
   // 先尝试快速探测免密，避免重复走初始化
-  const keyProbe = await checkKeyAuth({ ip, username });
+  const keyProbe = await checkKeyAuth({ ip, username, ssh2Config: keyOnlyConfig });
 
   // 不传 password：直接假设用户已免密，但开启 BatchMode，避免卡在交互
   if (!password) {
+    if (!keyOnlyConfig) {
+      return { host, baseArgs, prefix: [], keyInitFailed: true, message: "缺少可用的 SSH 私钥，请先完成免密初始化或填写密码" };
+    }
     const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
-    return { host, baseArgs: noPromptArgs, prefix: [], keyReady: keyProbe.ok };
+    return { host, baseArgs: noPromptArgs, prefix: [], keyReady: keyProbe.ok, ssh2Config: keyOnlyConfig };
   }
 
   // 传了 password：走一次免密初始化（需要用户输入密码一次）
   if (keyProbe.ok) {
     const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
-    return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
+    return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true, ssh2Config: keyOnlyConfig };
   }
   const init = await ensureKeyAuth({ ip, username, password });
   if (!init.ok) {
@@ -344,8 +533,12 @@ async function buildSshCommand({ ip, username, password }) {
   }
 
   // 初始化成功后，后续就不需要 password / sshpass
+  const refreshedConfig = buildSsh2Config({ ip, username });
+  if (!refreshedConfig) {
+    return { host, baseArgs, prefix: [], keyInitFailed: true, message: "免密初始化成功，但未找到本地私钥" };
+  }
   const noPromptArgs = [...baseArgs, "-o", "BatchMode=yes"];
-  return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true };
+  return { host, baseArgs: noPromptArgs, prefix: [], keyInitialized: true, ssh2Config: refreshedConfig };
 }
 
 /**
@@ -423,6 +616,7 @@ async function deployScript({ ip, username, password, rebootFirst = true, rootDi
     prefix,
     keyInitFailed,
     message: keyMsg,
+    ssh2Config,
   } = await buildSshCommand({
     ip,
     username,
@@ -465,6 +659,9 @@ async function deployScript({ ip, username, password, rebootFirst = true, rootDi
    * 执行 ssh 命令（统一封装）
    */
   async function sshExec(cmd, timeoutMs) {
+    if (ssh2Config) {
+      return runSsh2Command(ssh2Config, cmd, { timeoutMs });
+    }
     const sshArgs = [...prefix, "ssh", ...baseArgs, host, cmd];
     return runCommand(sshArgs[0], sshArgs.slice(1), { timeoutMs });
   }
@@ -485,10 +682,15 @@ async function deployScript({ ip, username, password, rebootFirst = true, rootDi
    * 上传脚本
    */
   async function scpUpload() {
-    const scpArgs = [...prefix, "scp", ...baseArgs, scriptPath, `${host}:${remotePath}`];
-    const scpRes = await runCommand(scpArgs[0], scpArgs.slice(1), { timeoutMs: 60000 });
+    const scpRes = ssh2Config
+      ? await runSsh2SftpUpload(ssh2Config, scriptPath, remotePath, { timeoutMs: 60000 })
+      : await runCommand(
+          "scp",
+          [...prefix, ...baseArgs, scriptPath, `${host}:${remotePath}`],
+          { timeoutMs: 60000 }
+        );
     if (scpRes.code === 124) {
-      return { ok: false, message: "上传超时：scp 可能在等待交互。请先确认免密已完成。" };
+      return { ok: false, message: "上传超时：ssh/sftp 可能在等待交互。请先确认免密已完成。" };
     }
     if (scpRes.code !== 0) {
       const baseMessage = `拷贝失败: ${scpRes.stderr || scpRes.stdout}`;
@@ -612,7 +814,7 @@ async function downloadCsv({ ip, username, password }) {
     return { ok: false, message: "未选择本地目录" };
   }
   const destination = result.filePaths[0];
-  const { host, baseArgs, prefix, keyInitFailed, message } = await buildSshCommand({
+  const { host, baseArgs, prefix, keyInitFailed, message, ssh2Config } = await buildSshCommand({
     ip,
     username,
     password,
@@ -622,7 +824,9 @@ async function downloadCsv({ ip, username, password }) {
   }
 
   const latestCmd = "ls -t /hmi/data/*.csv 2>/dev/null | head -n 1";
-  const latestRes = await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 30000 });
+  const latestRes = ssh2Config
+    ? await runSsh2Command(ssh2Config, latestCmd, { timeoutMs: 30000 })
+    : await runCommand("ssh", [...prefix, ...baseArgs, host, latestCmd], { timeoutMs: 30000 });
   if (latestRes.code === 124) {
     return { ok: false, message: "获取最新 CSV 超时：ssh 可能在等待交互。请确认免密初始化已完成。" };
   }
@@ -633,6 +837,16 @@ async function downloadCsv({ ip, username, password }) {
   const latestPath = (latestRes.stdout || "").trim();
   if (!latestPath) {
     return { ok: false, message: "未找到 CSV 文件" };
+  }
+
+  if (ssh2Config) {
+    const localPath = path.join(destination, path.basename(latestPath));
+    const sftpRes = await runSsh2SftpDownload(ssh2Config, latestPath, localPath, { timeoutMs: 60000 });
+    if (sftpRes.code !== 0) {
+      const baseMessage = `下载失败: ${sftpRes.stderr || sftpRes.stdout}`;
+      return { ok: false, message: formatSshAuthMessage(sftpRes, baseMessage) };
+    }
+    return { ok: true, message: `CSV 已下载到 ${localPath}` };
   }
 
   const scpArgs = [...prefix, "scp", "-C", "-r", ...baseArgs, `${host}:${latestPath}`, destination];
