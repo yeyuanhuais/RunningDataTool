@@ -1,6 +1,6 @@
 {
   "name": "running-data-tool",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Electron tool to visualize CSV metrics as line charts",
   "main": "main.js",
   "author": "",
