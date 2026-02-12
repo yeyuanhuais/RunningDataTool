@@ -150,12 +150,29 @@ function buildSsh2Config({ ip, username, password, readyTimeout = 15000 } = {}) 
   };
   if (password) {
     config.password = password;
+    config.tryKeyboard = true;
   } else {
     const privateKey = getPrivateKey();
     if (!privateKey) return null;
     config.privateKey = privateKey;
   }
   return config;
+}
+
+function connectSsh2(conn, config, timeoutMs) {
+  if (!conn || !config) return;
+
+  if (config.password) {
+    conn.on("keyboard-interactive", (_name, _instructions, _lang, prompts, finish) => {
+      if (Array.isArray(prompts) && prompts.length > 0) {
+        finish(prompts.map(() => config.password));
+      } else {
+        finish([config.password]);
+      }
+    });
+  }
+
+  conn.connect({ ...config, readyTimeout: timeoutMs });
 }
 
 async function runSsh2Command(config, cmd, { timeoutMs = 30000 } = {}) {
@@ -207,7 +224,7 @@ async function runSsh2Command(config, cmd, { timeoutMs = 30000 } = {}) {
       finish({ code: 1, stdout, stderr: err.message });
     });
 
-    conn.connect({ ...config, readyTimeout: timeoutMs });
+    connectSsh2(conn, config, timeoutMs);
   });
 }
 
@@ -258,7 +275,7 @@ async function runSsh2SftpUpload(config, localPath, remotePath, { timeoutMs = 60
       finish({ code: 1, stdout, stderr: err.message });
     });
 
-    conn.connect({ ...config, readyTimeout: timeoutMs });
+    connectSsh2(conn, config, timeoutMs);
   });
 }
 
@@ -309,7 +326,7 @@ async function runSsh2SftpDownload(config, remotePath, localPath, { timeoutMs = 
       finish({ code: 1, stdout, stderr: err.message });
     });
 
-    conn.connect({ ...config, readyTimeout: timeoutMs });
+    connectSsh2(conn, config, timeoutMs);
   });
 }
 
@@ -418,12 +435,11 @@ async function ensureKeyAuth({ ip, username, password }) {
         finish({ code: 1, stdout, stderr: err.message });
       });
 
-      conn.connect({
+      connectSsh2(conn, {
         host: ip,
         username: user,
         password,
-        readyTimeout: timeoutMs,
-      });
+      }, timeoutMs);
     });
   }
 
@@ -577,7 +593,11 @@ function isTransientSshError(res) {
 
 function formatSshAuthMessage(res, fallback) {
   const output = ((res && (res.stderr || "")) + " " + (res && (res.stdout || ""))).toLowerCase();
-  if (output.includes("permission denied") || output.includes("publickey")) {
+  if (
+    output.includes("permission denied") ||
+    output.includes("publickey") ||
+    output.includes("all configured authentication methods failed")
+  ) {
     return "权限被拒绝：请确认用户名/密码正确，或先在设备上追加本机公钥到 ~/.ssh/authorized_keys（可参考 PowerShell 脚本方式）。";
   }
   return fallback;
